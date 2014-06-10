@@ -51,6 +51,7 @@
 #include <limits.h>
 #include <pwd.h>
 #include <grp.h>
+#include <curl/curl.h>
 
 #define VERSION 				"1.0.7"
 #define	MAX_HTTP_HOSTS			15				/* 16 web servers */
@@ -140,6 +141,104 @@ static void printlog( int is_error, char *format, ... ) {
 		fprintf(is_error?stderr:stdout, "%s\n", buf);
 }
 
+struct Buf {
+  char * content;
+  size_t size;
+};
+
+static size_t https_header_callback(void * contents, size_t size, size_t nmemb, void * userp) {
+
+  size_t realsize = size * nmemb;
+
+  struct Buf * userp_buf = (struct Buf *)userp;
+
+  if ((userp_buf->size + realsize) < BUFFERSIZE) {
+    memcpy(userp_buf->content + userp_buf->size, contents, realsize);
+    userp_buf->size += realsize;
+    (userp_buf->content)[userp_buf->size] = '\0';
+  }
+
+  return(realsize);
+}
+
+static long getHTTPSdate (char * host, char * port, char * proxy, char * proxyport, char * httpversion, int ipversion, int when) {
+
+  struct tm tm;
+  struct timeval timevalue = {LONG_MAX, 0};
+  struct timeval timeofday;
+  struct timespec sleepspec, remainder;
+  long rtt;
+  char buffer[BUFFERSIZE];
+  char remote_time[25] = { '\0' };
+  char url[URLSIZE] = {'\0'};
+  char * pdate = 0;
+
+  struct Buf * buffer_buf = malloc(sizeof(struct Buf *));
+  buffer_buf->content = buffer;
+  buffer_buf->size = 0;
+  (buffer_buf->content)[0] = '\0';
+
+  snprintf(url,URLSIZE,"https://%s:%s",host,port);
+
+  CURL * curl;
+  CURLcode res;
+
+  curl_global_init(CURL_GLOBAL_DEFAULT);
+  curl = curl_easy_init();
+  if (curl) {
+    curl_easy_setopt(curl,CURLOPT_URL,url);
+    curl_easy_setopt(curl,CURLOPT_HEADERFUNCTION,https_header_callback);
+    curl_easy_setopt(curl,CURLOPT_WRITEHEADER,buffer_buf);
+    curl_easy_setopt(curl,CURLOPT_NOBODY,1);
+    curl_easy_setopt(curl,CURLOPT_FRESH_CONNECT,1);
+
+    gettimeofday(&timeofday, NULL);
+
+    rtt = timeofday.tv_sec;
+
+    sleepspec.tv_sec = 0;
+    if ( when >= timeofday.tv_usec ) {
+      sleepspec.tv_nsec = ( when - timeofday.tv_usec ) * 1000;
+    } else {
+      sleepspec.tv_nsec = ( 1000000 + when - timeofday.tv_usec ) * 1000;
+      rtt++;
+    }
+    nanosleep( &sleepspec, &remainder );
+
+    res = curl_easy_perform(curl);
+    if (res != CURLE_OK) {
+      printlog( 1, "Error sending" );
+    }
+    else {
+      gettimeofday(&timeofday,0);
+      rtt = ( timeofday.tv_sec - rtt ) * 1000000 + \
+	timeofday.tv_usec - when;
+
+      if ((pdate = strstr(buffer, "Date: ")) != 0) {
+	strncpy(remote_time, pdate + 11, 24);
+
+	if ( strptime( remote_time, "%d %b %Y %T", &tm) != 0) {
+	  tm.tm_isdst = 0;
+	  timevalue.tv_sec = mktime(&tm);
+	} else {
+	  printlog( 1, "%s unknown time format", host );
+	}
+
+	if ( debug )
+	  printlog( 0, "%-25s %s (%.3f) => %li", host, remote_time, \
+		    rtt * 1e-6, timevalue.tv_sec - timeofday.tv_sec \
+		    + gmtoffset );
+
+      } else {
+	printlog( 1, "%s no timestamp", host );
+      }
+    }
+    curl_easy_cleanup(curl);
+  }
+  curl_global_cleanup();
+
+  return(timevalue.tv_sec - timeofday.tv_sec + gmtoffset);
+}
 
 static long getHTTPdate( char *host, char *port, char *proxy, char *proxyport, char *httpversion, int ipversion, int when ) {
 	int					server_s;
@@ -501,6 +600,7 @@ int main( int argc, char *argv[] ) {
 	int					sleeptime = minsleep;
 	int					sw_uid = 0, sw_gid = 0;
 	time_t				starttime = 0;
+	unsigned char Sflag = 0;
 
 	struct passwd		*pw;
 	struct group		*gr;
@@ -510,7 +610,7 @@ int main( int argc, char *argv[] ) {
 
 
 	/* Parse the command line switches and arguments */
-	while ( (param = getopt(argc, argv, "046abdhi:lm:p:qstu:xDM:P:") ) != -1)
+	while ( (param = getopt(argc, argv, "046abdhi:lm:p:qstu:xDM:P:S") ) != -1)
 	switch( param ) {
 
 		case '0':			/* HTTP/1.0 */
@@ -604,6 +704,9 @@ int main( int argc, char *argv[] ) {
 			proxyport = DEFAULT_PROXY_PORT;
 			splithostport( &proxy, &proxyport );
 			break;
+	case 'S':
+	  Sflag = 1;
+	  break;
 		case '?':
 			return 1;
 		default:
@@ -693,8 +796,13 @@ int main( int argc, char *argv[] ) {
 			do {
 				if ( debug ) printlog( 0, "burst: %d try: %d when: %d", \
 					burst + 1, MAX_ATTEMPT - try + 1, when );
-				timestamp = getHTTPdate( host, port, proxy, proxyport,\
+				if (Sflag == 0) {
+				  timestamp = getHTTPdate( host, port, proxy, proxyport, \
 						httpversion, ipversion, when );
+				}
+				else {
+				  timestamp = getHTTPSdate(host,"443",proxy,proxyport,httpversion,ipversion,when);
+				}
 				try--;
 			} while ( timestamp && try );
 

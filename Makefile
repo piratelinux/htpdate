@@ -12,7 +12,7 @@ STRIP = /usr/bin/strip -s
 all: htpdate
 
 htpdate: htpdate.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o htpdate htpdate.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o htpdate htpdate.c -lcurl
 
 install: all
 	$(STRIP) htpdate
