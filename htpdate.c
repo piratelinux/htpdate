@@ -191,6 +191,7 @@ static long getHTTPSdate (char * host, char * port, char * proxy, char * proxypo
     curl_easy_setopt(curl,CURLOPT_WRITEHEADER,buffer_buf);
     curl_easy_setopt(curl,CURLOPT_NOBODY,1);
     curl_easy_setopt(curl,CURLOPT_FRESH_CONNECT,1);
+    curl_easy_setopt(curl,CURLOPT_TIMEOUT,10);
 
     gettimeofday(&timeofday, NULL);
 
